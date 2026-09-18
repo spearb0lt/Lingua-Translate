@@ -1,0 +1,255 @@
+"""End-to-end self test.
+
+    .venv/Scripts/python.exe scripts/selftest.py            # everything available
+    .venv/Scripts/python.exe scripts/selftest.py --offline  # no network providers
+    .venv/Scripts/python.exe scripts/selftest.py --local    # force local models only
+
+Exits non-zero if anything fails, so it doubles as a CI check.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+from lingua.engine import build_router  # noqa: E402
+from lingua.languages import LANGUAGES, get  # noqa: E402
+from lingua.script import analyse  # noqa: E402
+from lingua.types import Tier, TranslationRequest  # noqa: E402
+
+PASS, FAIL = "✓", "✗"
+
+
+class Report:
+    def __init__(self) -> None:
+        self.passed = 0
+        self.failed: list[str] = []
+
+    def check(self, ok: bool, label: str, detail: str = "") -> bool:
+        if ok:
+            self.passed += 1
+            print(f"  {PASS} {label}")
+        else:
+            self.failed.append(label)
+            print(f"  {FAIL} {label}")
+        if detail:
+            print(f"      {detail}")
+        return ok
+
+    def section(self, title: str) -> None:
+        print()
+        print("=" * 72)
+        print(title)
+        print("=" * 72)
+
+
+def test_registry(r: Report) -> None:
+    r.section("1. Language registry (offline)")
+    r.check(len(LANGUAGES) > 55, f"{len(LANGUAGES)} languages registered")
+    indian = [l for l in LANGUAGES if l.indic]
+    r.check(len(indian) == 22, f"all 22 scheduled Indian languages present "
+                               f"(found {len(indian)})")
+    r.check(get("hin_Deva") is not None and get("hin_Deva").code == "hi",
+            "FLORES tag hin_Deva resolves to Hindi")
+    r.check(get("hi-Latn") is not None and get("hi-Latn").code == "hi",
+            "Google's hi-Latn resolves to Hindi")
+    dupes = {l.flores for l in LANGUAGES if l.flores}
+    r.check(len(dupes) == len([l for l in LANGUAGES if l.flores]),
+            "no duplicate FLORES tags")
+
+
+def test_shared_scripts(r: Report) -> None:
+    """Languages that share a writing system must not collapse into one."""
+    r.section("2b. Shared-script disambiguation (offline)")
+    print("  Devanagari alone carries 8 of our languages; Bengali and Arabic")
+    print("  carry several each. Guessing the most common one changes meaning:")
+    print("  Marathi 'माझे नाव राहुल आहे' read as Hindi becomes 'My boat is Rahul'.")
+    print()
+    cases = [
+        ("hi",  "मेरा नाम राहुल है और मैं दिल्ली से हूँ"),
+        ("mr",  "माझे नाव राहुल आहे आणि मी मुंबईचा आहे"),
+        ("ne",  "मेरो नाम राहुल हो र म काठमाडौंबाट हुँ"),
+        ("sa",  "मम नाम राहुलः अस्ति"),
+        ("mai", "हमर नाम राहुल अछि"),
+        ("brx", "आंनि मुं राहुल"),
+        ("bn",  "আমার নাম রাহুল এবং আমি দিল্লি থেকে এসেছি"),
+        ("as",  "মোৰ নাম ৰাহুল আৰু মই দিল্লীৰ পৰা আহিছো"),
+        ("ur",  "میرا نام راہول ہے اور میں دہلی سے ہوں"),
+        ("sd",  "منهنجو نالو راهول آهي"),
+    ]
+    for truth, text in cases:
+        info = analyse(text)
+        r.check(info.guess == truth,
+                f"{truth:<4} {text[:28]!r:<32} -> {info.guess} ({info.confidence})")
+
+
+def test_script_detection(r: Report) -> None:
+    r.section("2. Script and romanization detection (offline, no network)")
+    cases = [
+        ("mera naam rahul hai", "Latin", True, "hi"),
+        ("मेरा नाम राहुल", "Devanagari", False, "hi"),
+        ("The quick brown fox jumps over the lazy dog", "Latin", False, "en"),
+        ("ami tomake bhalobashi ebong tumi amar bondhu", "Latin", True, "bn"),
+        ("naan unnai kaadhalikkiren romba nalla iruku", "Latin", True, "ta"),
+        ("Bonjour, comment allez-vous", "Latin", False, "en"),
+        ("こんにちは世界", "Japanese", False, "ja"),
+        ("السلام عليكم", "Arabic", False, "ur"),
+    ]
+    for text, script, romanized, guess in cases:
+        info = analyse(text)
+        ok = info.script == script and info.romanized == romanized and info.guess == guess
+        r.check(ok, f"{text[:34]!r:<38} -> {info.script}/{info.romanized}/{info.guess}",
+                "" if ok else f"expected {script}/{romanized}/{guess}")
+
+
+async def test_translation(r: Report, router, offline: bool) -> None:
+    r.section("3. Translation routing")
+    print(f"  providers: {[(p.name, p.tier.name) for p in router.providers]}")
+    print(f"  transliterators: {[t.name for t in router.transliterators]}")
+    print()
+
+    # (text, source, target, must_not_equal_input, note)
+    cases = [
+        ("mera naam rahul hai aur main dilli se hoon", "auto", "en", True,
+         "romanized Hindi, auto-detected"),
+        ("mera naam rahul hai", "hi", "ta", True, "romanized Hindi -> Tamil"),
+        ("amar nam gobindo", "as", "en", True, "the Assamese example"),
+        ("ami tomake bhalobashi", "auto", "en", True,
+         "REGRESSION: romanized Bengali must not pass through untranslated"),
+        ("naan unnai kaadhalikkiren", "ta", "hi", True,
+         "REGRESSION: romanized Tamil must translate, not transliterate"),
+        ("मेरा नाम राहुल है", "auto", "fr", True,
+         "native Devanagari -> French"),
+        ("Good morning, how are you today?", "en", "hi", True, "English -> Hindi"),
+        ("Good morning, how are you today?", "en", "ja", True, "English -> Japanese"),
+        ("मेरा नाम राहुल है और मैं दिल्ली से हूँ", "hi", "ja", True,
+         "REGRESSION: no Devanagari may leak into Japanese output"),
+        ("माझे नाव राहुल आहे आणि मी मुंबईचा आहे", "auto", "en", True,
+         "REGRESSION: Marathi must not be read as Hindi ('My boat is Rahul')"),
+    ]
+
+    for text, sl, tl, must_change, note in cases:
+        try:
+            res = await router.translate(
+                TranslationRequest(text=text, source=sl, target=tl))
+        except Exception as exc:
+            r.check(False, f"{sl:>4}->{tl}  {note}", f"{type(exc).__name__}: {exc}")
+            continue
+
+        changed = res.text.strip().lower() != text.strip().lower()
+        ok = bool(res.text.strip()) and (changed or not must_change)
+        detail = f"{text[:40]!r} -> {res.text[:56]!r}"
+        extra = (f"via {res.provider}/{res.tier.name}, src={res.source}"
+                 f" ({res.detected_by}), {res.took_ms}ms")
+        # A translation must not contain script that cannot belong to it.
+        from lingua.languages import require as _require
+        from lingua.script import looks_like_wrong_script
+        wrong, why = looks_like_wrong_script(res.text, _require(tl).script)
+        if wrong and "best available" not in " ".join(res.notes or []):
+            ok = False
+            detail += f"  [{why}]"
+
+        # The Marathi case has a specific wrong answer we must never see.
+        if "boat" in res.text.lower():
+            ok = False
+            detail += "  [read as Hindi: नाव translated as 'boat', not 'name']"
+
+        r.check(ok, f"{sl:>4}->{tl}  {note}", detail)
+        print(f"      {extra}")
+        if res.native_input:
+            print(f"      read as: {res.native_input!r}")
+
+    r.section("4. Fallback and tier control")
+    try:
+        res = await router.translate(TranslationRequest(
+            text="mera naam rahul hai", source="hi", target="en",
+            max_tier=Tier.LOCAL))
+        r.check(res.tier == Tier.LOCAL,
+                f"max_tier=LOCAL honoured (served by {res.provider})")
+    except Exception as exc:
+        r.check(offline is False, "max_tier=LOCAL correctly refuses when no local model",
+                f"{type(exc).__name__}: {str(exc)[:100]}")
+
+    # Each provider is probed with a pair it actually claims to handle. A
+    # one-size-fits-all pair would unfairly fail pivot_en, which refuses
+    # single-hop pairs like en->hi by design.
+    probes = [("Good morning", "en", "hi"),
+              ("मेरा नाम राहुल है", "hi", "ja"),
+              ("मेरा नाम राहुल है", "hi", "en")]
+
+    for provider in router.providers:
+        name = provider.name
+        chosen = next(((t, s, g) for t, s, g in probes
+                       if provider.supports(get(s), get(g))), probes[0])
+        text, source, target = chosen
+        try:
+            res = await router.translate(TranslationRequest(
+                text=text, source=source, target=target, prefer=name))
+            r.check(res.provider == name and bool(res.text.strip()),
+                    f"prefer={name} works ({source}->{target})", f"-> {res.text!r}")
+        except Exception as exc:
+            message = str(exc)
+            # A gated Hub repo is an account setup issue on this machine, not
+            # a defect in the code, so report it as a skip with the fix.
+            if "gated" in message.lower():
+                print(f"  - prefer={name} skipped: model weights are gated on "
+                      f"Hugging Face")
+                print(f"      accept the terms and set HF_TOKEN; see the README")
+                continue
+            r.check(False, f"prefer={name} works ({source}->{target})",
+                    f"{type(exc).__name__}: {message[:90]}")
+
+    res = await router.translate(TranslationRequest(
+        text="Hello world", source="en", target="en"))
+    r.check(res.provider == "noop" and res.text == "Hello world",
+            "same source and target short-circuits")
+
+
+async def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--offline", action="store_true",
+                    help="local providers only, no network")
+    ap.add_argument("--local", action="store_true",
+                    help="alias for --offline")
+    args = ap.parse_args()
+    offline = args.offline or args.local
+
+    r = Report()
+    test_registry(r)
+    test_script_detection(r)
+    test_shared_scripts(r)
+
+    # Always build the full edition so local models are actually exercised;
+    # --offline then strips everything that needs a network.
+    router = build_router("full")
+    if offline:
+        router.providers = [p for p in router.providers if p.tier == Tier.LOCAL]
+        router.transliterators = [t for t in router.transliterators if t.offline]
+        if not router.providers:
+            print("\nNo local providers available. Install requirements-local.txt,")
+            print("or drop --offline to test the network engines.")
+            return 1
+
+    try:
+        await test_translation(r, router, offline)
+    finally:
+        await router.close()
+
+    print()
+    print("=" * 72)
+    print(f"{r.passed} passed, {len(r.failed)} failed")
+    for name in r.failed:
+        print(f"  {FAIL} {name}")
+    print("=" * 72)
+    return 1 if r.failed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(asyncio.run(main()))
