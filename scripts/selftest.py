@@ -231,6 +231,33 @@ async def test_extras(r: Report, router) -> None:
     stats = router.cache.stats()
     r.check(stats["hits"] >= 1, f"cache reports hits ({stats['hits']})")
 
+    r.section("5b. Approximate results must not poison the cache")
+    from lingua.languages import get as _get
+    exact = [t for t in router.transliterators
+             if not getattr(t, "approximate", False)]
+    rough = [t for t in router.transliterators
+             if getattr(t, "approximate", False)]
+    if exact and rough:
+        router.cache.clear()
+        # An offline-only run caches an approximate transliteration...
+        router.transliterators = rough
+        rough_text, rough_by = await router.to_native_script(
+            "mera naam rahul hai", _get("hi"))
+        # ...and must not be served once an exact transliterator is back.
+        router.transliterators = exact + rough
+        good_text, good_by = await router.to_native_script(
+            "mera naam rahul hai", _get("hi"))
+        r.check(good_by != rough_by and good_text != rough_text,
+                "a cached approximate transliteration is re-done when an "
+                "exact engine is available",
+                f"{rough_text!r} via {rough_by} -> {good_text!r} via {good_by}")
+        again_text, again_by = await router.to_native_script(
+            "mera naam rahul hai", _get("hi"))
+        r.check(again_text == good_text and again_by == good_by,
+                "the exact transliteration is then cached and reused")
+    else:
+        print("  - skipped: needs both an exact and an approximate transliterator")
+
     r.section("6. Quality scoring")
     r.check(round_trip_score("hello world", "hello world") == 1.0,
             "an identical round trip scores 1.0")

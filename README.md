@@ -73,7 +73,7 @@ RTX 3050 Laptop 4 GB, Windows 11, Python 3.12) rather than assumed.
 | Google Input Tools transliteration | ✅ `mera naam rahul` → `मेरा नाम राहुल` |
 | `ctranslate2` on Windows **and** linux-aarch64 | ✅ wheels for both, so speech works on laptop and Oracle |
 | Edge TTS keyless endpoint | ✅ 322 voices, 35 Indian |
-| Self-test suite | ✅ 55/55 with local models |
+| Self-test suite | ✅ 57/57 with local models, 37/37 offline |
 | English pivot beats NLLB direct | ✅ `hi→ja` 私の名前はラहुル → 私の名前はラウル |
 | Wrong-script output is caught, not served | ✅ falls through to an engine that gets it right |
 | Languages sharing a script are told apart | ✅ 11/11, was 2/11 — Marathi no longer read as Hindi |
@@ -248,6 +248,14 @@ cached too, since the live input hint calls that on every pause in typing.
 
 `LINGUA_CACHE=0` disables it; `use_cache: false` bypasses it for one request;
 `POST /api/cache/clear` empties it.
+
+One subtlety worth knowing, because it bit once: cached **transliterations**
+record whether they were approximate. The offline transliterator renders
+"rahul" as रहुल rather than राहुल, and those answers used to share a cache key
+with the exact online ones — so a single offline run silently degraded "My
+name is Rahul" to "My name is Raul" for every later run, for the whole TTL. A
+cached approximate result is now re-done as soon as an exact engine is
+reachable, and the better answer replaces it.
 
 ---
 

@@ -102,7 +102,7 @@ class Router:
         if self.cache.enabled:
             key = TranslationCache.key("xlit", text=text, language=language.code)
             hit = self.cache.get(key)
-            if hit is not None:
+            if hit is not None and not self._better_xlit_available(hit, language):
                 return hit.get("text"), hit.get("provider")
 
         for tl in self.transliterators:
@@ -122,9 +122,30 @@ class Router:
             if native and native.strip():
                 native = native.strip()
                 if key:
-                    self.cache.set(key, {"text": native, "provider": tl.name})
+                    self.cache.set(key, {
+                        "text": native, "provider": tl.name,
+                        "approximate": bool(getattr(tl, "approximate", False))})
                 return native, tl.name
         return None, None
+
+    def _better_xlit_available(self, cached: dict, language: Language) -> bool:
+        """Should we ignore a cached transliteration and try for a better one?
+
+        The offline transliterator is approximate -- it renders "rahul" as
+        रहुल rather than राहुल -- and its answers used to be cached under the
+        same key as the exact online ones. A run with no network then poisoned
+        the cache for every later run that did have one, silently degrading
+        "My name is Rahul" to "My name is Raul" for the whole 30-day TTL.
+        """
+        if not cached.get("approximate"):
+            return False
+        for tl in self.transliterators:
+            if getattr(tl, "approximate", False) or not tl.available():
+                continue
+            supports = getattr(tl, "supports", None)
+            if supports is None or supports(language):
+                return True          # an exact transliterator can do better
+        return False
 
     # --- main entry point --------------------------------------------------
     async def translate(self, req: TranslationRequest) -> TranslationResult:
