@@ -588,8 +588,28 @@ el.srcText.addEventListener("input", () => {
   updateHint();
 });
 
+/* Enter translates, Shift+Enter starts a new line.
+
+   The composition guard is not optional here. Typing Hindi, Japanese or
+   Chinese with an input method editor uses Enter to *accept* the suggested
+   word, and the browser still fires keydown for it. Without this check the
+   first Enter of every IME word would be stolen to translate a half-finished
+   sentence -- which would break the app for precisely the people it is for.
+   `isComposing` is the modern signal; keyCode 229 is the older one some
+   browsers still send. */
+function shouldTranslateOnEnter(event) {
+  if (event.key !== "Enter") return false;
+  if (event.isComposing || event.keyCode === 229) return false;
+  if (event.shiftKey) return false;         // Shift+Enter: let it insert a newline
+  return true;
+}
+
 el.srcText.addEventListener("keydown", (e) => {
-  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); translate(); }
+  // Ctrl/Cmd+Enter keeps working too, for anyone used to it.
+  if (shouldTranslateOnEnter(e)) {
+    e.preventDefault();
+    translate();
+  }
 });
 
 document.addEventListener("keydown", (e) => {

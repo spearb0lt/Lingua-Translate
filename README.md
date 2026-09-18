@@ -313,6 +313,12 @@ pip install torch.whl
 Open <http://localhost:8000>. Use `localhost`, not the LAN IP — browsers only
 grant microphone access on `localhost` or HTTPS.
 
+In the input box, **Enter** translates and **Shift+Enter** starts a new line
+(Ctrl/Cmd+Enter also translates). Enter is deliberately ignored while an input
+method editor is composing, so typing Hindi, Japanese or Chinese with an IME
+keyboard is unaffected — the Enter that accepts a candidate word is not stolen
+to translate a half-finished sentence.
+
 ### Check it
 
 ```bash

@@ -273,3 +273,7 @@ input[type="file"]::file-selector-button {
 .alts { margin-top: 6px; display: flex; flex-direction: column; gap: 3px; }
 .alts .alt { font-size: 12px; color: var(--text-dim); }
 .alts .alt b { color: var(--text); font-weight: 600; }
+
+/* keyboard hint in the input footer -- hidden when the panel gets narrow */
+.kbd-hint { margin-left: 10px; color: var(--text-faint); }
+@media (max-width: 900px) { .kbd-hint { display: none; } }
