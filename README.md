@@ -31,6 +31,14 @@ can't serve the pair.
 UI tells you which rung answered — and it checks its own output, so a garbled
 translation is rejected rather than served.
 
+**It can tell you how much to trust it.** Ask for an accuracy check and the
+result is translated back through a *different* engine and scored, with the
+round trip shown so you can judge it yourself. Ask for best-of-3 and it runs
+three engines and keeps the highest-scoring one.
+
+**It translates whole documents**, not just sentences — Word, PDF, subtitles
+and plain text, keeping timings, styling, tables and indentation.
+
 ---
 
 ## The tier ladder
@@ -65,10 +73,12 @@ RTX 3050 Laptop 4 GB, Windows 11, Python 3.12) rather than assumed.
 | Google Input Tools transliteration | ✅ `mera naam rahul` → `मेरा नाम राहुल` |
 | `ctranslate2` on Windows **and** linux-aarch64 | ✅ wheels for both, so speech works on laptop and Oracle |
 | Edge TTS keyless endpoint | ✅ 322 voices, 35 Indian |
-| Self-test suite | ✅ 40/40 with local models |
+| Self-test suite | ✅ 55/55 with local models |
 | English pivot beats NLLB direct | ✅ `hi→ja` 私の名前はラहुル → 私の名前はラウル |
 | Wrong-script output is caught, not served | ✅ falls through to an engine that gets it right |
 | Languages sharing a script are told apart | ✅ 11/11, was 2/11 — Marathi no longer read as Hindi |
+| Cache | ✅ repeat request 190 ms → **0 ms**, survives restarts |
+| Document translation | ✅ .txt .md .csv .srt .vtt .docx .pdf, structure preserved |
 | MMS-TTS offline voices | ✅ Assamese, Odia, Maithili, Punjabi, all 36M params |
 | **IndicTrans2 + IndicConformer weights** | ⚠️ **gated on Hugging Face — needs a free account**, see below |
 | **transformers 5.x** | ⚠️ **breaks IndicTrans2**; pinned to `<5`, see below |
@@ -160,6 +170,87 @@ gap in what has been built in the world, not in this app.
 
 ---
 
+## Accuracy checking
+
+The brief this answers says accuracy is what decides whether a translation
+service is worth using. So the system can estimate its own.
+
+Ask for it per request (`"score": true`, or *Accuracy check* in the UI) and
+the translation is fed back through a **different** engine, with the round
+trip compared to the original using chrF — an F-score over character n-grams,
+chosen because it needs no tokeniser, which matters when the languages include
+Japanese and Tamil.
+
+`"best_of": 3` runs three engines and keeps the highest scorer. One grader
+scores every candidate: grading each with a different engine is not a
+comparison, and an early version produced 1.0, 1.0 and 0.711 for three
+engines that had returned *identical text*.
+
+Read the numbers for what they are:
+
+```
+1.00  identical round trip
+0.66  "My name is Rahul, I come from Delhi"     good paraphrase
+0.59  "My boat is Rahul and I am from Mumbai"   WRONG, but still scores fine
+0.31  "I am Rahul from Delhi"                   terse but correct
+0.08  "The weather is nice today"               unrelated
+```
+
+Rows three and four are the honest limitation: this is surface similarity, so
+one wrong content word costs little while a correct-but-terse rendering is
+punished. It is a smoke alarm for gross failure and a fair tie-breaker between
+candidates — not a judge of meaning. That is why the back translation is
+displayed next to the score: a person reading "My boat is Rahul" needs no
+metric.
+
+One blind spot is closed explicitly. A provider that hands the text back
+untranslated round-trips *perfectly*, and scored 0.61 — enough to beat real
+translations. Output is therefore also compared against the **input**, and a
+passthrough is forced to zero.
+
+---
+
+## Documents
+
+```bash
+curl -X POST localhost:8000/api/document/translate \
+  -F "file=@notice.docx" -F "target=hi" -o notice.hi.docx
+```
+
+| In | Out | What survives |
+|---|---|---|
+| `.txt` `.md` `.csv` `.log` | same | blank lines, indentation, markdown markers |
+| `.srt` `.vtt` | same | timestamps and cue numbers are never sent to an engine |
+| `.docx` | same | paragraph styles, bold runs, tables — written back into the original file |
+| `.pdf` | `.docx` | text per page, paragraphs rebuilt from wrapped lines |
+
+PDF is the one asymmetry, deliberately: rewriting a PDF in place means
+re-flowing text into fixed-position boxes in a script whose glyphs are a
+different width, which overlaps and clips. An editable Word file is more
+honest than a broken-looking PDF.
+
+Repeated segments are translated once — a subtitle file with the same line
+twice costs one call, and `/api/document/inspect` reports the saving before
+you commit. A segment that fails keeps its original text rather than losing
+the document.
+
+---
+
+## Caching
+
+On by default, in memory with a SQLite file behind it so it survives
+restarts. A repeated sentence went from **190 ms to 0 ms** in testing.
+
+It matters for more than speed: Google's keyless endpoints rate-limit
+datacentre IPs far harder than home connections, which is the main fragility
+of the Render deployment. Every hit is a call not made. Transliterations are
+cached too, since the live input hint calls that on every pause in typing.
+
+`LINGUA_CACHE=0` disables it; `use_cache: false` bypasses it for one request;
+`POST /api/cache/clear` empties it.
+
+---
+
 ## Install
 
 Requires **Python 3.12** (not 3.13/3.14 — PyTorch support lags).
@@ -243,6 +334,12 @@ token can reach.
 | `LINGUA_CONFORMER_DECODING` | `ctc` | `ctc` or `rnnt` |
 | `LINGUA_TTS_ORDER` | `edge,google,mms` | voice engine order; put `mms` first to prefer offline |
 | `LINGUA_TTS_CACHE` | `2` | how many MMS voices stay resident |
+| `LINGUA_CACHE` | `1` | `0` disables the translation cache |
+| `LINGUA_CACHE_TTL` | 30 days | seconds before a cached entry expires |
+| `LINGUA_CACHE_SIZE` | `512` | entries held in memory |
+| `LINGUA_CACHE_DIR` | `~/.cache/lingua` | where the SQLite cache lives |
+| `LINGUA_DOC_CONCURRENCY` | `4` | document segments translated in parallel |
+| `LINGUA_MAX_DOC_MB` | `20` | upload limit for documents |
 | `LINGUA_PRELOAD` | unset | `1` warms models at startup |
 | `MYMEMORY_EMAIL` | unset | raises MyMemory's free quota ~5k → ~50k words/day |
 | `LIBRETRANSLATE_URL` | unset | point at your own instance to get an unlimited free tier |
@@ -279,7 +376,11 @@ curl -X POST localhost:8000/api/translate \
 | `POST /api/transliterate` | romanized → native script, on its own |
 | `POST /api/speech/transcribe` | audio → text |
 | `POST /api/speech/translate` | audio → transcript + translation |
-| `POST /api/speak` | text → mp3 |
+| `POST /api/speak` | text → mp3 or wav |
+| `POST /api/document/inspect` | what's in a file, before translating it |
+| `POST /api/document/translate` | file in, translated file out |
+| `GET /api/document/formats` | accepted formats and size limit |
+| `POST /api/cache/clear` | empty the translation cache |
 | `GET /api/languages` | the picker payload |
 | `GET /api/providers` | which engines are live, on what device |
 
@@ -357,6 +458,8 @@ lingua/                  provider-agnostic engine, no web framework
   languages.py           61 languages ×  the 5 code systems providers use
   script.py              Unicode script detection + romanized-Indic heuristic
   router.py              tier ladder, source resolution, transliteration fork
+  cache.py               memory LRU over a SQLite file
+  quality.py             chrF, round-trip scoring, passthrough detection
   providers/
     google_free.py       gtx (curl_cffi) + clients5 (httpx)
     inputtools.py        romanized → native, online
@@ -368,6 +471,7 @@ lingua/                  provider-agnostic engine, no web framework
 server/                  full edition: FastAPI + speech + the UI
   asr.py / asr_engines.py    Whisper + IndicConformer chain
   tts.py / tts_engines.py    Edge + Google + MMS chain
+  documents.py               .txt .md .srt .vtt .docx .pdf
 lite/                    network-only edition for Render/Vercel
 scripts/                 selftest, model download, Oracle provisioning
 ```
