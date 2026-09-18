@@ -9,3 +9,6 @@ curl_cffi>=0.7
 indic-transliteration>=2.3
 # Keyless text to speech (35 Indian voices). Pure Python.
 edge-tts>=7.0
+# Document translation: Word in/out and PDF text extraction. Both pure Python.
+python-docx>=1.1
+pypdf>=4.0
