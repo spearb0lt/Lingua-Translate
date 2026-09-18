@@ -1,0 +1,11 @@
+# Lite edition: network providers only. No torch, no model weights.
+# Installs in well under Render's free-tier limits.
+fastapi>=0.115
+uvicorn[standard]>=0.30
+httpx>=0.27
+pydantic>=2.7
+# Google's keyless endpoint fingerprints TLS and blocks plain Python clients;
+# curl_cffi presents a browser handshake. Has wheels for x86_64 and aarch64.
+curl_cffi>=0.7
+# Offline fallback for romanized Indic input. Pure Python, tiny.
+indic-transliteration>=2.3

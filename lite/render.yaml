@@ -1,0 +1,24 @@
+# Render blueprint for the lite edition.
+# Deploy: New > Blueprint, point at this repo, set the blueprint path to
+# lite/render.yaml. Free plan gives 512 MB RAM / 0.1 CPU and sleeps after
+# 15 minutes of inactivity, which is why only the lite edition goes here.
+services:
+  - type: web
+    name: lingua-lite
+    runtime: python
+    plan: free
+    region: singapore          # closest free region to India
+    rootDir: .                 # repo root, so the lingua package is importable
+    buildCommand: pip install -r lite/requirements.txt
+    startCommand: uvicorn lite.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+      - key: LINGUA_EDITION
+        value: lite
+      - key: LINGUA_LOCAL
+        value: "0"
+      # Uncomment to raise the MyMemory free quota from ~5k to ~50k words/day.
+      # - key: MYMEMORY_EMAIL
+      #   value: you@example.com
