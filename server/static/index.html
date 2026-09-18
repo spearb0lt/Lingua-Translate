@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lingua — translation for Indian and world languages</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🗣️</text></svg>">
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="logo" aria-hidden="true">अA</div>
+    <div class="head-text">
+      <h1>Lingua</h1>
+      <div class="sub">Indian &amp; world languages · local models first, free fallbacks after</div>
+    </div>
+    <span class="pill" id="engine-pill"><span class="dot"></span><span id="engine-text">starting…</span></span>
+  </header>
+
+  <main class="grid">
+
+    <!-- source -->
+    <section class="panel">
+      <div class="panel-head">
+        <label class="sr-only" for="src-lang">Source language</label>
+        <select id="src-lang"><option value="auto">Detect language</option></select>
+      </div>
+
+      <textarea id="src-text" placeholder="Type here — native script or romanized.&#10;Try: mera naam rahul hai" spellcheck="false" autofocus></textarea>
+
+      <div class="hint" id="hint">
+        <span class="tag" id="hint-tag">read as</span>
+        <span class="native" id="hint-native"></span>
+        <span class="approx" id="hint-approx"></span>
+      </div>
+
+      <div class="panel-foot">
+        <button id="mic" class="icon" title="Record speech (or press Ctrl+M)">
+          <span id="mic-glyph">🎙</span><span id="mic-label">Speak</span>
+        </button>
+        <button id="clear" class="icon" title="Clear">Clear</button>
+        <span class="spacer"></span>
+        <span class="count"><span id="count">0</span> chars</span>
+      </div>
+    </section>
+
+    <div class="swap-col">
+      <button id="swap" title="Swap languages" aria-label="Swap languages">⇄</button>
+    </div>
+
+    <!-- target -->
+    <section class="panel">
+      <div class="panel-head">
+        <label class="sr-only" for="tgt-lang">Target language</label>
+        <select id="tgt-lang"></select>
+      </div>
+
+      <div class="output empty" id="out" aria-live="polite">Translation appears here.</div>
+
+      <div class="panel-foot">
+        <button id="speak" class="icon" title="Read the translation aloud">🔊 Listen</button>
+        <button id="copy" class="icon" title="Copy translation">Copy</button>
+        <button id="share" class="icon" title="Copy a link that reproduces this translation">Link</button>
+        <span class="spacer"></span>
+        <button id="go" class="primary">Translate</button>
+      </div>
+    </section>
+
+  </main>
+
+  <div class="status" id="status"></div>
+
+  <details class="settings">
+    <summary>Engines &amp; settings</summary>
+    <div class="settings-body">
+
+      <div class="field">
+        <label for="max-tier">Highest tier allowed</label>
+        <select id="max-tier">
+          <option value="LOCAL">Local models only (fully offline)</option>
+          <option value="FREE_WEB" selected>Local, then free web endpoints</option>
+          <option value="FREE_API">…also free APIs</option>
+          <option value="FREEMIUM">…also key-based services</option>
+        </select>
+        <span class="help">The router always tries the lowest tier first. This only caps how far it may fall back.</span>
+      </div>
+
+      <div class="field">
+        <label for="prefer">Force one engine</label>
+        <select id="prefer"><option value="">Automatic (recommended)</option></select>
+        <span class="help">Useful for comparing a local model against Google on the same sentence.</span>
+      </div>
+
+      <div class="field">
+        <label for="voice-gender">Voice</label>
+        <select id="voice-gender">
+          <option value="">Default voice</option>
+          <option value="female">Female</option>
+          <option value="male">Male</option>
+        </select>
+        <span class="help">Neural voices where they exist, on-device MMS voices where they do not.</span>
+      </div>
+
+      <div class="field">
+        <label for="voice-source">Voice source</label>
+        <select id="voice-source">
+          <option value="auto">Best available (recommended)</option>
+          <option value="offline">On-device only (works offline)</option>
+        </select>
+        <span class="help">On-device uses MMS. It sounds more robotic but needs no network, and it is the only voice for Assamese, Odia and Maithili.</span>
+      </div>
+
+      <div class="field" style="grid-column: 1 / -1;">
+        <label>Engine status</label>
+        <table class="providers" id="prov-table">
+          <thead><tr><th>Engine</th><th>Tier</th><th>Ready</th><th>Notes</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+    </div>
+  </details>
+
+</div>
+
+<div class="toast" id="toast"></div>
+<audio id="player" hidden></audio>
+<script src="/static/app.js"></script>
+</body>
+</html>
