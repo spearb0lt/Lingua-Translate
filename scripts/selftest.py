@@ -212,6 +212,81 @@ async def test_translation(r: Report, router, offline: bool) -> None:
             "same source and target short-circuits")
 
 
+async def test_extras(r: Report, router) -> None:
+    """Cache, quality scoring and document handling."""
+    from lingua.quality import looks_untranslated, round_trip_score
+    from server import documents
+
+    r.section("5. Cache")
+    router.cache.clear()
+    req = lambda **kw: TranslationRequest(text="Good morning, how are you?",
+                                          source="en", target="hi", **kw)
+    first = await router.translate(req())
+    second = await router.translate(req())
+    r.check(not first.cached and second.cached,
+            "second identical request is served from cache",
+            f"{first.took_ms} ms -> {second.took_ms} ms")
+    fresh = await router.translate(req(use_cache=False))
+    r.check(not fresh.cached, "use_cache=False bypasses the cache")
+    stats = router.cache.stats()
+    r.check(stats["hits"] >= 1, f"cache reports hits ({stats['hits']})")
+
+    r.section("6. Quality scoring")
+    r.check(round_trip_score("hello world", "hello world") == 1.0,
+            "an identical round trip scores 1.0")
+    r.check(round_trip_score("My name is Rahul and I am from Delhi",
+                             "The weather is nice today") < 0.2,
+            "an unrelated round trip scores near zero")
+    r.check(looks_untranslated("ami tomake bhalobashi", "ami tomake bhalobashi"),
+            "an untranslated passthrough is detected")
+    r.check(not looks_untranslated("मेरा नाम राहुल है और मैं दिल्ली से हूँ",
+                                   "My name is Rahul and I am from Delhi"),
+            "a real translation is not mistaken for a passthrough")
+
+    scored = await router.translate(TranslationRequest(
+        text="मेरा नाम राहुल है और मैं दिल्ली से हूँ", source="hi", target="en",
+        score=True, use_cache=False))
+    r.check(scored.quality is not None and scored.back_translation,
+            f"a scored request returns a quality value ({scored.quality})",
+            f"back: {scored.back_translation!r} by {scored.graded_by}")
+
+    best = await router.translate(TranslationRequest(
+        text="मेरा नाम राहुल है और मैं दिल्ली से हूँ", source="hi", target="en",
+        best_of=3, use_cache=False))
+    graders = {best.graded_by} | {None}
+    r.check(len(best.alternatives) >= 1,
+            f"best_of returns alternatives ({len(best.alternatives)})")
+    identical = {best.text} | {a["text"] for a in best.alternatives}
+    scores = {best.quality} | {a["quality"] for a in best.alternatives}
+    r.check(len(identical) > 1 or len(scores) == 1,
+            "candidates with identical text get identical scores (one grader)")
+
+    r.section("7. Documents")
+    txt = b"Hello world.\n\n    Indented line.\n"
+    doc = documents.load(txt, "a.txt")
+    r.check(doc.segments == ["Hello world.", "    Indented line."],
+            "text: blank lines skipped, content kept")
+    rebuilt = doc.rebuild(["Bonjour.", "Ligne."]).decode()
+    r.check("\n\n" in rebuilt and rebuilt.splitlines()[2].startswith("    "),
+            "text: blank line and indentation survive the rebuild")
+
+    srt = (b"1\n00:00:01,000 --> 00:00:03,000\nGood morning.\n\n"
+           b"2\n00:00:03,500 --> 00:00:06,000\nGood morning.\n")
+    doc = documents.load(srt, "a.srt")
+    unique, mapping = documents.dedupe(doc.segments)
+    r.check(len(doc.segments) == 2 and len(unique) == 1,
+            "subtitles: repeated cue is translated once")
+    out = doc.rebuild(documents.expand(["Bonjour."], mapping)).decode()
+    r.check("00:00:01,000 --> 00:00:03,000" in out and out.count("Bonjour.") == 2,
+            "subtitles: timestamps untouched, translation reused")
+
+    try:
+        documents.load(b"x", "a.xyz")
+        r.check(False, "unsupported format is refused")
+    except documents.UnsupportedDocument:
+        r.check(True, "unsupported format is refused")
+
+
 async def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--offline", action="store_true",
@@ -239,6 +314,8 @@ async def main() -> int:
 
     try:
         await test_translation(r, router, offline)
+        if not offline:
+            await test_extras(r, router)
     finally:
         await router.close()
 
