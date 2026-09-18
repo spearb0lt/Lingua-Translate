@@ -72,6 +72,25 @@
 
   <div class="status" id="status"></div>
 
+  <details class="settings" id="doc-panel">
+    <summary>Translate a document</summary>
+    <div class="settings-body">
+      <div class="field" style="grid-column: 1 / -1;">
+        <label for="doc-file">File</label>
+        <input type="file" id="doc-file"
+               accept=".txt,.md,.csv,.log,.srt,.vtt,.docx,.pdf">
+        <span class="help" id="doc-formats">Keeps structure: subtitle timings, Word styling and tables, indentation. PDFs come back as editable Word files.</span>
+      </div>
+      <div class="field" style="grid-column: 1 / -1;">
+        <div class="doc-actions">
+          <button id="doc-inspect">Inspect</button>
+          <button id="doc-go" class="primary">Translate &amp; download</button>
+          <span class="count" id="doc-status"></span>
+        </div>
+      </div>
+    </div>
+  </details>
+
   <details class="settings">
     <summary>Engines &amp; settings</summary>
     <div class="settings-body">
@@ -91,6 +110,16 @@
         <label for="prefer">Force one engine</label>
         <select id="prefer"><option value="">Automatic (recommended)</option></select>
         <span class="help">Useful for comparing a local model against Google on the same sentence.</span>
+      </div>
+
+      <div class="field">
+        <label for="quality-mode">Accuracy check</label>
+        <select id="quality-mode">
+          <option value="off">Off — fastest</option>
+          <option value="score">Score this translation</option>
+          <option value="best">Compare 3 engines, keep the best</option>
+        </select>
+        <span class="help">Translates the result back through a different engine and scores how much survived. Costs an extra call.</span>
       </div>
 
       <div class="field">

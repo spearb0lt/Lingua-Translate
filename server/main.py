@@ -10,6 +10,7 @@ audio back.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import tempfile
@@ -26,6 +27,7 @@ from lingua.engine import build_router, max_tier_from_env
 from lingua.languages import picker
 from lingua.types import ProviderError, Tier, TranslationRequest
 
+from . import documents
 from .asr import SpeechRecognizer
 from .tts import TextToSpeech
 
@@ -82,6 +84,10 @@ class TranslateBody(BaseModel):
     prefer: str | None = Field(None, description="force one provider by name")
     max_tier: str | None = Field(None, description="LOCAL|FREE_WEB|FREE_API|FREEMIUM")
     transliterate_input: bool = True
+    use_cache: bool = True
+    score: bool = Field(False, description="estimate quality via a round trip")
+    best_of: int = Field(1, ge=1, le=5,
+                         description="try N engines and keep the best-scoring")
 
 
 class TransliterateBody(BaseModel):
@@ -125,6 +131,9 @@ async def providers():
         "translation": state["router"].describe(),
         "speech_to_text": state["asr"].status(),
         "text_to_speech": await state["tts"].status(),
+        "cache": state["router"].cache.stats(),
+        "documents": {"formats": sorted(documents.SUPPORTED),
+                      "max_mb": MAX_DOC_BYTES // 1024 // 1024},
         "max_tier": max_tier_from_env().name,
     }
 
@@ -141,6 +150,9 @@ async def translate(body: TranslateBody):
         prefer=body.prefer,
         max_tier=_resolve_tier(body.max_tier),
         transliterate_input=body.transliterate_input,
+        use_cache=body.use_cache,
+        score=body.score,
+        best_of=body.best_of,
     )
     try:
         result = await state["router"].translate(req)
@@ -265,6 +277,117 @@ async def speak(body: SpeakBody):
                              "X-TTS-Engine": result.engine,
                              "X-TTS-Offline": str(result.offline).lower(),
                              "Cache-Control": "no-store"})
+
+
+# --- documents ------------------------------------------------------------
+MAX_DOC_BYTES = int(os.getenv("LINGUA_MAX_DOC_MB", "20")) * 1024 * 1024
+DOC_CONCURRENCY = int(os.getenv("LINGUA_DOC_CONCURRENCY", "4"))
+
+
+async def _read_document(upload: UploadFile) -> tuple[bytes, "documents.Document"]:
+    data = await upload.read()
+    if not data:
+        raise HTTPException(400, "empty file")
+    if len(data) > MAX_DOC_BYTES:
+        raise HTTPException(413, f"file larger than {MAX_DOC_BYTES // 1024 // 1024} MB")
+    try:
+        return data, documents.load(data, upload.filename or "")
+    except documents.UnsupportedDocument as exc:
+        raise HTTPException(415, str(exc))
+    except Exception as exc:
+        log.exception("could not parse document")
+        raise HTTPException(400, f"could not read this file: {exc}")
+
+
+@app.post("/api/document/inspect")
+async def document_inspect(file: UploadFile = File(...)):
+    """What we found in the file, without translating anything yet."""
+    _data, doc = await _read_document(file)
+    unique, _mapping = documents.dedupe(doc.segments)
+    return {
+        "filename": file.filename,
+        "kind": doc.kind,
+        "segments": len(doc.segments),
+        "unique_segments": len(unique),
+        "characters": sum(len(s) for s in doc.segments),
+        "output_format": doc.suffix,
+        "note": doc.note,
+        "meta": doc.meta,
+        "preview": doc.segments[:5],
+    }
+
+
+@app.post("/api/document/translate")
+async def document_translate(file: UploadFile = File(...),
+                             target: str = Form(...),
+                             source: str = Form("auto"),
+                             max_tier: str | None = Form(None)):
+    _data, doc = await _read_document(file)
+    if not doc.segments:
+        raise HTTPException(422, "no translatable text found in this file")
+
+    tier = _resolve_tier(max_tier)
+    unique, mapping = documents.dedupe(doc.segments)
+
+    # Resolve the source language once from a sample rather than per segment:
+    # per-segment detection is slower and can disagree with itself partway
+    # through a document, which reads as the translation losing the thread.
+    resolved = source
+    if source == "auto":
+        sample = " ".join(unique[:12])[:2000]
+        resolution = state["router"].resolve_source(sample, None)
+        if resolution.language is not None:
+            resolved = resolution.language.code
+            log.info("document source detected as %s (%s, %.2f)", resolved,
+                     resolution.method, resolution.confidence)
+
+    semaphore = asyncio.Semaphore(DOC_CONCURRENCY)
+    failures = 0
+
+    async def translate_one(segment: str) -> str:
+        nonlocal failures
+        async with semaphore:
+            try:
+                result = await state["router"].translate(TranslationRequest(
+                    text=segment, target=target, source=resolved, max_tier=tier))
+                return result.text or segment
+            except Exception as exc:
+                # One bad segment must not lose the whole document; keep the
+                # original text so the output stays complete and readable.
+                failures += 1
+                log.warning("segment failed, keeping original: %s", exc)
+                return segment
+
+    translated_unique = await asyncio.gather(*(translate_one(s) for s in unique))
+    rebuilt = doc.rebuild(documents.expand(list(translated_unique), mapping))
+
+    stem = Path(file.filename or "document").stem
+    name = f"{stem}.{target}{doc.suffix}"
+    headers = {
+        "Content-Disposition": f'attachment; filename="{name}"',
+        "X-Segments": str(len(doc.segments)),
+        "X-Unique-Segments": str(len(unique)),
+        "X-Source-Language": resolved,
+        "X-Failed-Segments": str(failures),
+    }
+    if doc.note:
+        headers["X-Note"] = doc.note
+    return Response(content=rebuilt, media_type=doc.media_type, headers=headers)
+
+
+@app.post("/api/cache/clear")
+async def cache_clear():
+    removed = state["router"].cache.clear()
+    return {"cleared": removed, "stats": state["router"].cache.stats()}
+
+
+@app.get("/api/document/formats")
+async def document_formats():
+    return {
+        "input": sorted(documents.SUPPORTED),
+        "notes": {".pdf": "returned as .docx; see /api/document/inspect"},
+        "max_mb": MAX_DOC_BYTES // 1024 // 1024,
+    }
 
 
 # --- static UI ------------------------------------------------------------

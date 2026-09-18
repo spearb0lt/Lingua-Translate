@@ -14,7 +14,9 @@ const el = {
   speak: $("speak"), count: $("count"), status: $("status"),
   enginePill: $("engine-pill"), engineText: $("engine-text"),
   maxTier: $("max-tier"), prefer: $("prefer"), voiceGender: $("voice-gender"),
-  voiceSource: $("voice-source"),
+  voiceSource: $("voice-source"), qualityMode: $("quality-mode"),
+  docFile: $("doc-file"), docGo: $("doc-go"), docInspect: $("doc-inspect"),
+  docStatus: $("doc-status"), docFormats: $("doc-formats"),
   provTable: $("prov-table").querySelector("tbody"),
   toast: $("toast"), player: $("player"),
 };
@@ -83,6 +85,7 @@ async function loadLanguages() {
   el.tgtLang.value = localStorage.getItem("lingua.tgt") || "en";
   el.maxTier.value = localStorage.getItem("lingua.tier") || "FREE_WEB";
   el.voiceSource.value = localStorage.getItem("lingua.voiceSource") || "auto";
+  el.qualityMode.value = localStorage.getItem("lingua.quality") || "off";
 }
 
 async function loadProviders() {
@@ -139,6 +142,24 @@ async function loadProviders() {
       <td class="${info.available ? "yes" : "no"}">${info.available ? "yes" : "no"}</td>
       <td>${notes.join(" · ") || "not installed"}</td>`;
     el.provTable.appendChild(row);
+  }
+
+  if (data.cache) {
+    const c = data.cache;
+    const row = document.createElement("tr");
+    const rate = c.hit_rate !== null && c.hit_rate !== undefined
+      ? ` \u00b7 ${Math.round(c.hit_rate * 100)}% hit rate` : "";
+    row.innerHTML = `
+      <td class="name">cache</td><td>\u2014</td>
+      <td class="${c.enabled ? "yes" : "no"}">${c.enabled ? "on" : "off"}</td>
+      <td>${c.memory_entries} in memory, ${c.disk_entries || 0} on disk${rate}</td>`;
+    el.provTable.appendChild(row);
+  }
+  if (data.documents) {
+    el.docFormats.textContent =
+      `Accepts ${data.documents.formats.join(", ")} up to ${data.documents.max_mb} MB. ` +
+      `Keeps subtitle timings, Word styling and tables, and indentation. ` +
+      `PDFs come back as editable Word files.`;
   }
 
   const localReady = data.translation.some((p) => p.tier === "LOCAL" && p.available);
@@ -236,12 +257,15 @@ async function translate() {
 
   const started = performance.now();
   try {
+    const mode = el.qualityMode.value;
     const result = await json("/api/translate", {
       text,
       source: el.srcLang.value,
       target: el.tgtLang.value,
       max_tier: el.maxTier.value,
       prefer: el.prefer.value || null,
+      score: mode !== "off",
+      best_of: mode === "best" ? 3 : 1,
     }, inFlight.signal);
 
     lastResult = result;
@@ -269,11 +293,117 @@ function renderStatus(result, wallMs) {
     `<span>${srcName} → ${languages.find((l) => l.code === result.target)?.name || result.target}</span>`,
     `<span class="mono">${result.took_ms} ms server · ${Math.round(wallMs)} ms total</span>`,
   ];
+  if (result.cached) bits.push(`<span class="note">from cache</span>`);
   if (result.detected_by && result.detected_by !== "explicit") {
     bits.push(`<span class="note">detected by ${result.detected_by}</span>`);
   }
+  if (result.quality !== null && result.quality !== undefined) {
+    const band = qualityBand(result.quality);
+    bits.push(`<span>accuracy <span class="quality ${band}">${Math.round(result.quality * 100)}% ${band}</span></span>`);
+  }
   for (const note of result.notes || []) bits.push(`<span class="note">${note}</span>`);
   el.status.innerHTML = bits.join("");
+
+  if (result.back_translation) {
+    const div = document.createElement("div");
+    div.className = "back-translation";
+    div.style.flexBasis = "100%";
+    div.textContent = `translated back by ${result.graded_by}: "${result.back_translation}"`;
+    el.status.appendChild(div);
+  }
+  if (result.alternatives && result.alternatives.length) {
+    const box = document.createElement("div");
+    box.className = "alts";
+    box.style.flexBasis = "100%";
+    for (const alt of result.alternatives) {
+      const row = document.createElement("div");
+      row.className = "alt";
+      const pct = (alt.quality === null || alt.quality === undefined)
+        ? "\u2014" : `${Math.round(alt.quality * 100)}%`;
+      row.innerHTML = `<b>${escapeHtml(alt.provider)}</b> ${pct}: ${escapeHtml(alt.text)}`;
+      box.appendChild(row);
+    }
+    el.status.appendChild(box);
+  }
+}
+
+function qualityBand(score) {
+  if (score >= 0.75) return "high";
+  if (score >= 0.5) return "moderate";
+  if (score >= 0.3) return "low";
+  return "very";
+}
+
+function escapeHtml(text) {
+  const node = document.createElement("span");
+  node.textContent = text;
+  return node.innerHTML;
+}
+
+/* ------------------------------------------------------------------ */
+/* documents                                                           */
+/* ------------------------------------------------------------------ */
+
+async function inspectDocument() {
+  const file = el.docFile.files && el.docFile.files[0];
+  if (!file) { toast("Choose a file first"); return; }
+  el.docStatus.textContent = "reading\u2026";
+  const form = new FormData();
+  form.append("file", file);
+  try {
+    const info = await (await api("/api/document/inspect",
+                                  { method: "POST", body: form })).json();
+    const unique = info.unique_segments < info.segments
+      ? ` (${info.unique_segments} unique)` : "";
+    el.docStatus.textContent =
+      `${info.kind}: ${info.segments} segments${unique}, ${info.characters} chars`;
+    if (info.note) toast(info.note);
+  } catch (err) {
+    el.docStatus.textContent = err.message;
+  }
+}
+
+async function translateDocument() {
+  const file = el.docFile.files && el.docFile.files[0];
+  if (!file) { toast("Choose a file first"); return; }
+
+  el.docGo.disabled = true;
+  el.docStatus.textContent = "translating\u2026";
+  const form = new FormData();
+  form.append("file", file);
+  form.append("target", el.tgtLang.value);
+  form.append("source", el.srcLang.value);
+  form.append("max_tier", el.maxTier.value);
+
+  try {
+    const res = await api("/api/document/translate", { method: "POST", body: form });
+    const blob = await res.blob();
+    const disposition = res.headers.get("Content-Disposition") || "";
+    const match = disposition.match(/filename="([^"]+)"/);
+    const name = match ? match[1] : `translated-${file.name}`;
+
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = name;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+
+    const failed = Number(res.headers.get("X-Failed-Segments") || 0);
+    el.docStatus.textContent =
+      `${res.headers.get("X-Segments")} segments \u00b7 ` +
+      `${res.headers.get("X-Source-Language")} \u2192 ${el.tgtLang.value}` +
+      (failed ? ` \u00b7 ${failed} kept as original` : "") +
+      ` \u00b7 saved as ${name}`;
+    const note = res.headers.get("X-Note");
+    if (note) toast(note);
+  } catch (err) {
+    el.docStatus.textContent = err.message;
+  } finally {
+    el.docGo.disabled = false;
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -402,6 +532,11 @@ async function speakOutput() {
 /* ------------------------------------------------------------------ */
 
 el.go.addEventListener("click", translate);
+el.docGo.addEventListener("click", translateDocument);
+el.docInspect.addEventListener("click", inspectDocument);
+el.docFile.addEventListener("change", () => { el.docStatus.textContent = ""; });
+el.qualityMode.addEventListener("change", () =>
+  localStorage.setItem("lingua.quality", el.qualityMode.value));
 el.speak.addEventListener("click", speakOutput);
 el.mic.addEventListener("click", toggleRecording);
 
@@ -490,6 +625,12 @@ function applyUrlParams() {
 
   if (from === "auto" || known(from)) el.srcLang.value = from;
   if (known(to)) el.tgtLang.value = to;
+
+  // ?score=1 or ?score=best turns the accuracy check on for a shared link,
+  // so a link can demonstrate the scoring rather than just the translation.
+  const score = q.get("score");
+  if (score === "best") el.qualityMode.value = "best";
+  else if (score === "1" || score === "true") el.qualityMode.value = "score";
   if (text) {
     el.srcText.value = text;
     el.count.textContent = text.length;
