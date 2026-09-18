@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import os
 
+from .cache import TranslationCache
 from .providers.base import Provider, Transliterator
 from .providers.free_apis import LibreTranslateProvider, MyMemoryProvider
 from .providers.google_free import GoogleDictProvider, GoogleFreeProvider
@@ -71,7 +72,8 @@ def build_router(edition: str | None = None, *, local: bool | None = None,
     if local_timeout is None:
         local_timeout = float(os.getenv("LINGUA_LOCAL_TIMEOUT", "120"))
 
-    router = Router(providers, transliterators, local_timeout=local_timeout)
+    router = Router(providers, transliterators, local_timeout=local_timeout,
+                    cache=TranslationCache())
     log.info("edition=%s providers=%s", edition,
              [f"{p.name}:{p.tier.name}" for p in router.providers])
     return router

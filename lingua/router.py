@@ -25,7 +25,9 @@ import asyncio
 import logging
 import time
 
+from .cache import TranslationCache
 from .languages import Language, get as get_lang, require
+from .quality import looks_untranslated, round_trip_score
 from .providers.base import Provider, ProviderOutput, Transliterator
 from .script import (SCRIPT_DEFAULT_LANG, ScriptInfo, analyse,
                      looks_like_wrong_script)
@@ -59,12 +61,14 @@ class SourceResolution:
 class Router:
     def __init__(self, providers: list[Provider],
                  transliterators: list[Transliterator] | None = None,
-                 local_timeout: float | None = 120.0):
+                 local_timeout: float | None = 120.0,
+                 cache: TranslationCache | None = None):
         # Stable sort by tier keeps registration order within a tier, which is
         # how we express "gtx before clients5".
         self.providers = sorted(providers, key=lambda p: p.tier)
         self.transliterators = transliterators or []
         self.local_timeout = local_timeout
+        self.cache = cache if cache is not None else TranslationCache()
 
     # --- source language ---------------------------------------------------
     def resolve_source(self, text: str, declared: str | None) -> SourceResolution:
@@ -92,6 +96,15 @@ class Router:
     async def to_native_script(self, text: str,
                                language: Language) -> tuple[str | None, str | None]:
         """Romanized -> native script. Returns (native_text, provider_name)."""
+        # Worth caching on its own: the live input hint calls this on every
+        # pause in typing, and the same words recur constantly.
+        key = None
+        if self.cache.enabled:
+            key = TranslationCache.key("xlit", text=text, language=language.code)
+            hit = self.cache.get(key)
+            if hit is not None:
+                return hit.get("text"), hit.get("provider")
+
         for tl in self.transliterators:
             if not tl.available():
                 continue
@@ -107,7 +120,10 @@ class Router:
                 log.warning("transliterator %s failed: %s", tl.name, exc)
                 continue
             if native and native.strip():
-                return native.strip(), tl.name
+                native = native.strip()
+                if key:
+                    self.cache.set(key, {"text": native, "provider": tl.name})
+                return native, tl.name
         return None, None
 
     # --- main entry point --------------------------------------------------
@@ -132,6 +148,23 @@ class Router:
                 detected_by=resolution.method, confidence=resolution.confidence,
                 notes=["source and target are the same language"],
                 took_ms=int((time.perf_counter() - started) * 1000))
+
+        # A cache hit skips everything below: no detection, no transliteration
+        # call, no model pass. The key covers every input that can change the
+        # answer, so a different tier or a forced provider misses correctly.
+        cache_key = None
+        if self.cache.enabled and req.use_cache:
+            cache_key = TranslationCache.key(
+                "translate", text=text, source=req.source, target=target.code,
+                prefer=req.prefer, max_tier=req.max_tier.name,
+                xlit=req.transliterate_input, score=req.score,
+                best_of=req.best_of)
+            hit = self.cache.get(cache_key)
+            if hit is not None:
+                result = TranslationResult.from_dict(hit)
+                result.cached = True
+                result.took_ms = int((time.perf_counter() - started) * 1000)
+                return result
 
         # Romanized Indic: convert to native script before translating anything.
         #
@@ -166,6 +199,10 @@ class Router:
         # Results we refused for wrong-script output, kept as a last resort:
         # a garbled translation still beats no translation at all.
         rejected: list[tuple[Provider, ProviderOutput, str]] = []
+        successes: list[tuple[Provider, ProviderOutput, str]] = []
+        # best_of asks for several candidates to score against each other;
+        # otherwise the first provider that works wins, as before.
+        wanted = max(1, req.best_of or 1)
 
         for provider in candidates:
             payload = text
@@ -177,7 +214,7 @@ class Router:
                 # IndicTrans2 cannot read romanized text at all.
                 payload = native_text
             elif provider.detects and req.source == "auto" \
-                    and resolution.confidence < 0.6:
+                    and resolution.confidence < DETECT_THRESHOLD:
                 # We are unsure what this is, and this provider has its own
                 # detector, so let it decide rather than forcing our guess.
                 # Providers without one (MyMemory) keep the explicit source,
@@ -217,27 +254,23 @@ class Router:
                 rejected.append((provider, output, why))
                 continue
 
-            final_source = get_lang(output.detected_source) or source
             detected_by = resolution.method
             if output.detected_source and src_arg is None:
                 detected_by = f"{provider.name}-detect"
 
+            successes.append((provider, output, detected_by))
+            if len(successes) >= wanted:
+                break
+
+        if successes:
             if errors:
                 notes.append(f"fell back past {len(errors)} provider(s)")
-
-            return TranslationResult(
-                text=output.text,
-                source=final_source.code if final_source else "auto",
-                target=target.code,
-                provider=provider.name,
-                tier=provider.tier,
-                romanized_input=resolution.info.romanized or output.romanized,
-                native_input=native_text,
-                detected_by=detected_by,
-                confidence=resolution.confidence,
-                took_ms=int((time.perf_counter() - started) * 1000),
-                notes=notes,
-            )
+            result = await self._assemble(req, successes, resolution, source,
+                                          target, native_text or text, native_text,
+                                          notes, started)
+            if cache_key:
+                self.cache.set(cache_key, result.to_dict())
+            return result
 
         if rejected:
             # Everyone produced wrong-script output. Serve the first one, but
@@ -260,6 +293,109 @@ class Router:
             )
 
         raise ProviderError("router", "every provider failed: " + "; ".join(errors))
+
+    async def _assemble(self, req: TranslationRequest,
+                        successes: list[tuple[Provider, ProviderOutput, str]],
+                        resolution: SourceResolution, source: Language | None,
+                        target: Language, semantic_source: str,
+                        native_text: str | None, notes: list[str],
+                        started: float) -> TranslationResult:
+        """Pick the winner among candidates and attach a quality estimate."""
+        scoring = req.score or len(successes) > 1
+        scored: list[tuple[float | None, Provider, ProviderOutput, str, str | None, str | None]] = []
+
+        # One grader for the whole comparison. Grading each candidate with a
+        # different engine is not a comparison at all: three engines that
+        # produced identical text scored 1.0, 1.0 and 0.711 purely because
+        # three different graders translated it back.
+        grader_provider = None
+        if scoring:
+            competitors = [p for p, _o, _d in successes]
+            grader_provider = self._pick_grader(competitors, source, target)
+
+        for provider, output, detected_by in successes:
+            score = back = grader = None
+            if scoring and grader_provider is not None:
+                score, back, grader = await self._grade(
+                    semantic_source, output.text, source, target, grader_provider,
+                    also_a_candidate=grader_provider in [p for p, _o, _d in successes])
+                # A provider that handed the text back unchanged round-trips
+                # perfectly and would otherwise win. Catch it against the
+                # input rather than the round trip.
+                if looks_untranslated(semantic_source, output.text):
+                    score = 0.0
+                    if provider is successes[0][0]:
+                        notes.append("the chosen engine returned the input "
+                                     "largely unchanged")
+            scored.append((score, provider, output, detected_by, back, grader))
+
+        # Highest score wins; unscored entries keep their original order.
+        if scoring and any(entry[0] is not None for entry in scored):
+            scored.sort(key=lambda entry: entry[0] if entry[0] is not None else -1.0,
+                        reverse=True)
+
+        best_score, provider, output, detected_by, back, grader = scored[0]
+        final_source = get_lang(output.detected_source) or source
+
+        alternatives = [
+            {"provider": other.name, "tier": other.tier.name, "text": alt.text,
+             "quality": alt_score}
+            for alt_score, other, alt, _d, _b, _g in scored[1:]
+        ]
+        if alternatives:
+            notes.append(f"chose the best of {len(scored)} engines by round-trip score")
+
+        return TranslationResult(
+            text=output.text,
+            source=final_source.code if final_source else "auto",
+            target=target.code,
+            provider=provider.name,
+            tier=provider.tier,
+            romanized_input=resolution.info.romanized or output.romanized,
+            native_input=native_text,
+            detected_by=detected_by,
+            confidence=resolution.confidence,
+            took_ms=int((time.perf_counter() - started) * 1000),
+            notes=notes,
+            quality=best_score,
+            back_translation=back,
+            graded_by=grader,
+            alternatives=alternatives,
+        )
+
+    def _pick_grader(self, competitors: list[Provider], source: Language | None,
+                     target: Language) -> Provider | None:
+        """Choose one engine to translate everything back for scoring.
+
+        Preference order: an engine that is not among the candidates at all
+        (a neutral judge), then any that can do the return direction. An
+        engine marking its own homework flatters itself, because its mistakes
+        cancel out when it undoes them.
+        """
+        if source is None:
+            return None
+        able = [p for p in self.providers
+                if p.available() and p.supports(target, source)]
+        neutral = [p for p in able if p not in competitors]
+        return (neutral or able or [None])[0]
+
+    async def _grade(self, original: str, translated: str,
+                     source: Language | None, target: Language,
+                     grader: Provider, also_a_candidate: bool = False
+                     ) -> tuple[float | None, str | None, str | None]:
+        """Translate back through ``grader`` and score how much survived."""
+        if source is None or not translated.strip():
+            return None, None, None
+        try:
+            back = await self._invoke(grader, translated, target, source)
+        except Exception as exc:
+            log.debug("grader %s declined: %s", grader.name, exc)
+            return None, None, None
+        if not back.text.strip():
+            return None, None, None
+        score = round_trip_score(original, back.text)
+        label = grader.name + (" (also a candidate)" if also_a_candidate else "")
+        return score, back.text, label
 
     async def _invoke(self, provider: Provider, text: str,
                       source: Language | None, target: Language) -> ProviderOutput:
@@ -314,3 +450,4 @@ class Router:
                 await tl.close()
             except Exception:
                 log.warning("error closing %s", tl.name, exc_info=True)
+        self.cache.close()
