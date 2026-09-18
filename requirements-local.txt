@@ -1,0 +1,29 @@
+# Local models: on-device translation and speech recognition.
+#
+# Install torch FIRST with the build that matches your hardware, then this file:
+#
+#   NVIDIA GPU (your RTX 3050, CUDA 12.x driver):
+#     pip install torch --index-url https://download.pytorch.org/whl/cu126
+#   CPU only (Oracle ARM box, or no GPU):
+#     pip install torch --index-url https://download.pytorch.org/whl/cpu
+#
+# Installing torch from plain PyPI on Windows pulls a CUDA build anyway; on
+# Linux ARM it pulls the CPU build. Pinning the index makes it explicit.
+# Pinned below 5.x deliberately. transformers 5 moved
+# PreTrainedTokenizerBase out of transformers.tokenization_utils, and both
+# IndicTransToolkit 1.1.1 and IndicTrans2's own trust_remote_code modelling
+# file still import it from there, so 5.x breaks IndicTrans2 on import.
+# Re-test before lifting this pin; nothing else here needs 5.x.
+transformers>=4.44,<5
+sentencepiece>=0.2
+sacremoses>=0.1
+# IndicTrans2 preprocessing. Builds from source on Windows (needs the MSVC
+# build tools, which Visual Studio installs); ships wheels on Linux/macOS.
+IndicTransToolkit>=1.1
+# Speech recognition. ctranslate2 has wheels for win_amd64 and linux aarch64,
+# so this works on the laptop and on the Oracle ARM instance.
+faster-whisper>=1.1
+# Audio loading/resampling for IndicConformer, which covers the eight Indian
+# languages Whisper cannot transcribe. Install from the same torch index:
+#   pip install torchaudio --index-url https://download.pytorch.org/whl/cu126
+torchaudio>=2.2

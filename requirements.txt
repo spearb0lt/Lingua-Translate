@@ -1,0 +1,3 @@
+# Root requirements exist for Vercel, which installs from the repo root.
+# They are the lite (network-only) set -- see lite/requirements.txt.
+-r lite/requirements.txt

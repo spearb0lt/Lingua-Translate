@@ -1,0 +1,11 @@
+# Full edition, network providers + speech. No local translation models:
+# install requirements-local.txt as well for those.
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+httpx>=0.27
+pydantic>=2.7
+curl_cffi>=0.7
+indic-transliteration>=2.3
+# Keyless text to speech (35 Indian voices). Pure Python.
+edge-tts>=7.0
