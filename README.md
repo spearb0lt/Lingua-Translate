@@ -3,6 +3,8 @@
 Translation for Indian and world languages, built to run on your own hardware
 first and to fall back to free services only when it has to.
 
+**Live demo (lite edition):** https://lingua-translate-smoky.vercel.app
+
 Three things make it different from a thin wrapper around a translation API:
 
 **It reads romanized Indic text.** `mera naam rahul hai` is Hindi typed in
@@ -427,6 +429,7 @@ same UI over the network tiers only.
   `lingua` package is importable.
 - **Vercel**: `vercel.json` and `api/index.py` at the repo root (Vercel
   requires functions in `/api`); they are three-line shims onto `lite/main.py`.
+  Live at https://lingua-translate-smoky.vercel.app.
 
 Honest caveat: Google's keyless endpoints rate-limit datacentre IPs far more
 aggressively than home connections. The ladder falls through to MyMemory so

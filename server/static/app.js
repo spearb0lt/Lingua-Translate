@@ -665,8 +665,16 @@ function shareUrl() {
   return `${location.origin}${location.pathname}?${q}`;
 }
 
+async function markEdition() {
+  try {
+    const { edition } = await (await api("/api/health")).json();
+    if (edition === "lite") $("edition-note").hidden = false;
+  } catch { /* health check is best-effort; leave the note hidden */ }
+}
+
 (async function boot() {
   try {
+    await markEdition();
     await loadLanguages();
     const shouldTranslate = applyUrlParams();
     await loadProviders();
