@@ -1,0 +1,5 @@
+#!/bin/sh
+# Strips any AI-attribution trailer before the commit is finalized, as a
+# backstop in case an assistant adds one despite CLAUDE.md instructions.
+sed -i.bak -E '/^Co-Authored-By:.*(claude|anthropic)/Id' "$1"
+rm -f "$1.bak"
