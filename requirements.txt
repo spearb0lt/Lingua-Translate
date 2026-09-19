@@ -1,3 +1,10 @@
 # Root requirements exist for Vercel, which installs from the repo root.
 # They are the lite (network-only) set -- see lite/requirements.txt.
--r lite/requirements.txt
+# Inlined rather than `-r lite/requirements.txt`: Vercel's Python builder
+# fails to parse the `-r` include directive.
+fastapi>=0.115
+uvicorn[standard]>=0.30
+httpx>=0.27
+pydantic>=2.7
+curl_cffi>=0.7
+indic-transliteration>=2.3
