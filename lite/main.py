@@ -45,7 +45,7 @@ logging.basicConfig(level=os.getenv("LINGUA_LOG_LEVEL", "INFO"))
 log = logging.getLogger("lingua.lite")
 
 STATIC_DIR = ROOT / "server" / "static"
-MAX_TEXT_CHARS = int(os.getenv("LINGUA_MAX_TEXT_CHARS", "8000"))
+MAX_TEXT_CHARS = int(os.getenv("LINGUA_MAX_TEXT_CHARS") or "8000")
 
 state: dict = {}
 

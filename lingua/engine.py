@@ -70,7 +70,7 @@ def build_router(edition: str | None = None, *, local: bool | None = None,
         transliterators.append(offline_xlit)
 
     if local_timeout is None:
-        local_timeout = float(os.getenv("LINGUA_LOCAL_TIMEOUT", "120"))
+        local_timeout = float(os.getenv("LINGUA_LOCAL_TIMEOUT") or "120")
 
     router = Router(providers, transliterators, local_timeout=local_timeout,
                     cache=TranslationCache())
