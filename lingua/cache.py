@@ -84,8 +84,10 @@ class TranslationCache:
             self._db.execute(
                 "CREATE INDEX IF NOT EXISTS entries_created ON entries(created)")
             self._db.commit()
-        except sqlite3.Error as exc:
-            # A broken cache must never break translation.
+        except (OSError, sqlite3.Error) as exc:
+            # A broken cache must never break translation. OSError covers a
+            # read-only filesystem (e.g. Vercel's serverless functions, where
+            # only /tmp is writable and the home directory doesn't exist).
             log.warning("disk cache unavailable (%s); using memory only", exc)
             self._db = None
 
